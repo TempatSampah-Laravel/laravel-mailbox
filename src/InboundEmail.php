@@ -141,7 +141,7 @@ class InboundEmail extends Model
 
     public function message(): MimeMessage
     {
-        $this->mimeMessage = $this->mimeMessage ?: MimeMessage::from($this->message);
+        $this->mimeMessage = $this->mimeMessage ?: MimeMessage::from($this->message, true);
 
         return $this->mimeMessage;
     }
@@ -149,12 +149,20 @@ class InboundEmail extends Model
     public function reply(Mailable $mailable)
     {
         if ($mailable instanceof \Illuminate\Mail\Mailable) {
-            $mailable->withSwiftMessage(function (\Swift_Message $message) {
-                $message->getHeaders()->addIdHeader('In-Reply-To', $this->id());
-            });
+            $usesSymfonyMailer = version_compare(app()->version(), '9.0.0', '>');
+
+            if ($usesSymfonyMailer) {
+                $mailable->withSymfonyMessage(function (\Symfony\Component\Mime\Email $email) {
+                    $email->getHeaders()->addIdHeader('In-Reply-To', $this->id());
+                });
+            } else {
+                $mailable->withSwiftMessage(function (\Swift_Message $message) {
+                    $message->getHeaders()->addIdHeader('In-Reply-To', $this->id());
+                });
+            }
         }
 
-        return Mail::to($this->from())->send($mailable);
+        return Mail::to($this->headerValue('Reply-To') ?: $this->from())->send($mailable);
     }
 
     public function forward($recipients)
@@ -184,5 +192,44 @@ class InboundEmail extends Model
     public function isValid(): bool
     {
         return $this->from() !== '' && ($this->isText() || $this->isHtml());
+    }
+
+    public function isAutoReply($checkCommonSubjects = true): bool
+    {
+        if ($this->headerValue('x-autorespond')) {
+            return true;
+        }
+
+        if (in_array($this->headerValue('precedence'), ['auto_reply', 'bulk', 'junk'])) {
+            return true;
+        }
+
+        if (in_array($this->headerValue('x-precedence'), ['auto_reply', 'bulk', 'junk'])) {
+            return true;
+        }
+        if (in_array($this->headerValue('auto-submitted'), ['auto-replied', 'auto-generated'])) {
+            return true;
+        }
+
+        if ($checkCommonSubjects) {
+            return Str::startsWith($this->subject(), [
+                'Auto:',
+                'Automatic reply',
+                'Autosvar',
+                'Automatisk svar',
+                'Automatisch antwoord',
+                'Abwesenheitsnotiz',
+                'Risposta Non al computer',
+                'Automatisch antwoord',
+                'Auto Response',
+                'Respuesta automática',
+                'Fuori sede',
+                'Out of Office',
+                'Frånvaro',
+                'Réponse automatique',
+            ]);
+        }
+
+        return false;
     }
 }
